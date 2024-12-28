@@ -42,7 +42,7 @@ Certifique-se de que o script possui permissões de execução e que você tem a
    ```
 4. Execute o script:
    ```bash
-   python script_dns_enum.py
+   python dnsseeker.py
    ```
 
 ### Para usuários do Linux
@@ -57,11 +57,11 @@ Certifique-se de que o script possui permissões de execução e que você tem a
    ```
 3. Torne o script executável (opcional):
    ```bash
-   chmod +x script_dns_enum.py
+   chmod +x dnsseeker.py
    ```
 4. Execute o script:
    ```bash
-   ./script_dns_enum.py
+   ./dnsseeker.py
    ```
 
 ## Uso
