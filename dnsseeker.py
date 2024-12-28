@@ -8,17 +8,18 @@ import whois
 import ssl
 import concurrent.futures
 import os
+import argparse
 from datetime import datetime
 from colorama import init, Fore, Style
 from tqdm import tqdm
 from urllib.parse import urlparse
 
 class DNSSeeker:
-    def __init__(self, domain, wordlist=None, nameservers=None):
-        #remove http://, https://, and www.
+    def __init__(self, domain, wordlist=None, nameservers=None, zone_transfer=False, scan_ports=False):
         self.domain = self._clean_domain(domain)
+        self.zone_transfer_enabled = zone_transfer
+        self.scan_ports = scan_ports
         
-        # wordlist padrao se nenhum wordlist for fornecido
         if wordlist is None:
             wordlist = self._create_default_wordlist()
         self.wordlist = wordlist
@@ -31,16 +32,15 @@ class DNSSeeker:
             'vulnerabilities': [],
             'ssl_info': {},
             'whois_info': None,
-            'cloud_services': set()
+            'cloud_services': set(),
+            'port_scan_results': {}
         }
 
     def _clean_domain(self, domain):
         """Remove http://, https://, and www. from domain"""
-        # verifica se URL começa com http:// or https://
         if domain.startswith(('http://', 'https://')):
             domain = urlparse(domain).netloc
         
-        # Remove www. se tiver
         if domain.startswith('www.'):
             domain = domain[4:]
             
@@ -55,7 +55,6 @@ class DNSSeeker:
             'server', 'cloud', 'git', 'staging', 'prod', 'production', 'internal'
         ]
         
-        # Cria um arquivo temporario com subdominios padrões
         temp_wordlist = 'default_subdomains.txt'
         with open(temp_wordlist, 'w') as f:
             f.write('\n'.join(default_subdomains))
@@ -69,12 +68,17 @@ class DNSSeeker:
         methods = [
             self._brute_force_subdomains,
             self._certificate_transparency_search,
-            self._dns_zone_transfer,
             self._search_common_services
         ]
         
+        if self.zone_transfer_enabled:
+            methods.append(self._dns_zone_transfer)
+            
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(methods)) as executor:
             list(executor.map(lambda x: x(), methods))
+            
+        if self.scan_ports:
+            self._scan_ports()
             
     def _brute_force_subdomains(self):
         """Improved brute force with smart wordlist handling"""
@@ -109,7 +113,6 @@ class DNSSeeker:
             result = self.resolver.resolve(subdomain, 'A')
             ip = str(result[0])
             
-            # verifica por serviços em nuvem
             cloud_services = {
                 'amazonaws.com': 'AWS',
                 'azure.com': 'Azure',
@@ -177,28 +180,70 @@ class DNSSeeker:
             if result:
                 self.results['subdomains'].append(result)
 
+    def _scan_ports(self):
+        """Scan common ports on discovered subdomains"""
+        common_ports = [21, 22, 23, 25, 53, 80, 443, 445, 3306, 3389, 8080, 8443]
+        print(f"\n{Fore.YELLOW}[*] Starting port scan on discovered subdomains...{Style.RESET_ALL}")
+        
+        for subdomain_info in self.results['subdomains']:
+            hostname = subdomain_info['hostname']
+            ip = subdomain_info['ip']
+            open_ports = []
+            
+            print(f"\n{Fore.CYAN}[*] Scanning {hostname} ({ip}){Style.RESET_ALL}")
+            with tqdm(total=len(common_ports), desc="Port Scan Progress") as pbar:
+                for port in common_ports:
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(1)
+                        result = sock.connect_ex((ip, port))
+                        if result == 0:
+                            service = self._get_service_name(port)
+                            open_ports.append({'port': port, 'service': service})
+                        sock.close()
+                    except:
+                        pass
+                    finally:
+                        pbar.update(1)
+            
+            self.results['port_scan_results'][hostname] = open_ports
+
+    def _get_service_name(self, port):
+        """Get common service name for a port"""
+        common_services = {
+            21: 'FTP',
+            22: 'SSH',
+            23: 'Telnet',
+            25: 'SMTP',
+            53: 'DNS',
+            80: 'HTTP',
+            443: 'HTTPS',
+            445: 'SMB',
+            3306: 'MySQL',
+            3389: 'RDP',
+            8080: 'HTTP-Proxy',
+            8443: 'HTTPS-Alt'
+        }
+        return common_services.get(port, 'Unknown')
+
     def analyze_security(self):
         """Comprehensive security analysis"""
         print(f"\n{Fore.CYAN}[*] Starting security analysis...{Style.RESET_ALL}")
         for subdomain_info in self.results['subdomains']:
             subdomain = subdomain_info['hostname']
             
-            # subdomain takeover
             if self._check_subdomain_takeover(subdomain):
                 self.results['vulnerabilities'].append({
                     'type': 'Subdomain Takeover',
                     'target': subdomain
                 })
             
-            # verifica configurações de SSL/TLS
             ssl_info = self._check_ssl(subdomain)
             if ssl_info:
                 self.results['ssl_info'][subdomain] = ssl_info
                 
-            # pega registros de DNS
             self._get_dns_records(subdomain)
             
-        # pega informaçoes de whois
         self.results['whois_info'] = self._get_whois_info()
 
     def _check_subdomain_takeover(self, subdomain):
@@ -256,7 +301,6 @@ class DNSSeeker:
 
     def generate_report(self):
         """Generate a comprehensive report"""
-        # Cria um arquivo seguro removendo caracteres
         safe_filename = "".join(c for c in self.domain if c.isalnum() or c in ('-', '_', '.'))
         report_filename = f"dnsseeker_report_{safe_filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         
@@ -274,7 +318,6 @@ class DNSSeeker:
         print(f"Target Domain: {self.domain}")
         print(f"Scan Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}\n")
         
-        # imprime subdomínios
         print(f"{Fore.YELLOW}[+] Discovered Subdomains:{Style.RESET_ALL}")
         if self.results['subdomains']:
             for subdomain in self.results['subdomains']:
@@ -282,19 +325,24 @@ class DNSSeeker:
         else:
             print("  No subdomains discovered")
             
-        # imprime vulnerabilidades, se tiver
         if self.results['vulnerabilities']:
             print(f"\n{Fore.RED}[+] Potential Vulnerabilities:{Style.RESET_ALL}")
             for vuln in self.results['vulnerabilities']:
                 print(f"  - {vuln['type']}: {vuln['target']}")
                 
-        # imprime serviços em nuvem, se tiver
         if self.results['cloud_services']:
             print(f"\n{Fore.BLUE}[+] Detected Cloud Services:{Style.RESET_ALL}")
             for service in self.results['cloud_services']:
                 print(f"  - {service}")
                 
-        # salva tudo em um arquivo .json
+        if self.scan_ports and self.results['port_scan_results']:
+            print(f"\n{Fore.BLUE}[+] Port Scan Results:{Style.RESET_ALL}")
+            for hostname, ports in self.results['port_scan_results'].items():
+                if ports:
+                    print(f"\n  Host: {hostname}")
+                    for port_info in ports:
+                        print(f"    - Port {port_info['port']}: {port_info['service']}")
+
         try:
             with open(report_filename, 'w') as f:
                 json.dump(self.results, f, indent=4, default=str)
@@ -303,16 +351,24 @@ class DNSSeeker:
             print(f"\n{Fore.RED}[!] Error saving report: {str(e)}{Style.RESET_ALL}")
 
 def main():
-    init()  
+    init()
     
-    if len(sys.argv) != 2:
-        print(f"{Fore.RED}Usage: python dnsseeker.py <domain>{Style.RESET_ALL}")
-        sys.exit(1)
-        
-    domain = sys.argv[1]
-    scanner = DNSSeeker(domain)
+    parser = argparse.ArgumentParser(description='DNSSeeker - Advanced DNS Enumeration Tool')
+    parser.add_argument('-d', '--domain', required=True, help='Target domain')
+    parser.add_argument('-w', '--wordlist', help='Path to wordlist file')
+    parser.add_argument('--zone-transfer', action='store_true', help='Enable DNS zone transfer attempts')
+    parser.add_argument('--scan-ports', action='store_true', help='Enable port scanning')
     
-    print(f"{Fore.CYAN}Starting DNS enumeration for {domain}...{Style.RESET_ALL}")
+    args = parser.parse_args()
+    
+    scanner = DNSSeeker(
+        domain=args.domain,
+        wordlist=args.wordlist,
+        zone_transfer=args.zone_transfer,
+        scan_ports=args.scan_ports
+    )
+    
+    print(f"{Fore.CYAN}Starting DNS enumeration for {args.domain}...{Style.RESET_ALL}")
     scanner.get_subdomains()
     
     print(f"{Fore.CYAN}Performing security analysis...{Style.RESET_ALL}")
