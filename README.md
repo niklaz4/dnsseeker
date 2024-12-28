@@ -82,7 +82,7 @@ Parâmetros adicionais:
 Exemplo completo:
 
 ```bash
-python script_dns_enum.py -d example.com -w wordlist.txt --zone-transfer --scan-ports
+python dnsseeker.py -d example.com -w wordlist.txt --zone-transfer --scan-ports
 ```
 
 ## Saída
